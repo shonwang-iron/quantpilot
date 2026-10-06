@@ -1,0 +1,3 @@
+# Optional; baseline analysis needs no external packages.
+torch>=2.2,<3
+transformers>=4.40,<5
