@@ -146,16 +146,22 @@ def main():
     parser.add_argument('--edge', type=float, default=0.001)
     parser.add_argument('--deep-model', help='省略時使用詞典情緒；指定時使用 Transformer 情緒')
     parser.add_argument('--device', default='cpu')
+    parser.add_argument('--nlp-backend', choices=('auto', 'snownlp', 'vader'))
     args = parser.parse_args()
     try:
         predictor = None
+        if args.nlp_backend and args.deep_model:
+            raise ValueError('交易特徵的 nlp-backend 與 deep-model 請擇一指定')
         if args.deep_model:
             from .deep_sentiment import DeepSentiment
             predictor = DeepSentiment(args.deep_model, args.device)
+        elif args.nlp_backend:
+            from .nlp_sentiment import NLPSentiment
+            predictor = NLPSentiment(args.nlp_backend)
         samples = build_samples(load_news(args.news), load_periods(args.periods), predictor)
         report = backtest(samples, timestamp(args.test_start), args.min_train, args.alpha,
                           args.max_features, args.cost_bps, args.edge)
-        report['config']['sentiment_model'] = args.deep_model or 'lexicon'
+        report['config']['sentiment_model'] = args.deep_model or ('nlp:' + args.nlp_backend if args.nlp_backend else 'lexicon')
         Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
     except ImportError as exc:
         parser.error('缺少套件，請安裝 requirements-strategy.txt；深度情緒另需 requirements-deep.txt：' + str(exc))

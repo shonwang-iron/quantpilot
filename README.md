@@ -341,3 +341,131 @@ python3 -m quantpilot.news_data prepare --input data/news_raw.jsonl --input vend
 news_clean.csv 可直接供 sentiment、compare 及 feature_strategy 使用。資料時間採 UTC ISO 8601，分析工具會依時區正確比較；Excel 可讀取 UTF-8 BOM CSV。本工具不會自動移除來源署名、造成人工標註、推定缺失時間、擷取股價或把今日抓取的歷史文章當成過去已取得的新聞。
 
 首次實際驗證收集中央社 20 則及 Yahoo 股市 50 則，共 70 則，清理後保留 69 則（完全重複 1 則、拒絕 0 則）。這是一次收集快照，不是完整歷史資料，也不是單一公司的篩選資料；請先依標的篩選，並累積有可信時間的新聞及相應價格，再進行台股回測。資料位於 data/，已排除於 Git 追蹤。
+
+
+## 使用 Python NLP 套件
+
+新增 `quantpilot.nlp_sentiment`，支援 [SnowNLP](https://github.com/isnowfy/snownlp) 中文情緒與斷詞，以及 [VADER](https://github.com/cjhutto/vaderSentiment) 英文詞典／規則式情緒。原先的 Transformers 深度學習介面仍可透過 `--deep-learning` 使用。
+
+SnowNLP 會先透過套件的 han 功能轉為簡體，再進行情緒分析與中文斷詞；原始新聞 text 保持不變。其預訓練情緒模型主要使用商品評論，不能視為財經新聞專用模型。VADER 主要針對英文社群文字，沒有中文情緒能力。兩者均需人工標註新聞評估後才能判定適用性。
+
+### 安裝與新聞分析
+
+macOS，在專案根目錄執行：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-nlp.txt
+.venv/bin/python -m quantpilot.sentiment --input data/news_clean.csv --nlp-backend auto --output data/news_nlp_sentiment.jsonl
+```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-nlp.txt
+.\.venv\Scripts\python.exe -m quantpilot.sentiment --input data/news_clean.csv --nlp-backend auto --output data/news_nlp_sentiment.jsonl
+```
+
+`auto` 對含漢字的新聞使用 SnowNLP，其餘使用 VADER。可指定 `snownlp` 或 `vader` 固定方法；指定方法與輸入語言不適用時會停止，而不是把中文送入 VADER 後誤當 neutral。中英混合文字採 SnowNLP，但標記 `mixed_language`，其英文片段的情緒不會額外分析，適用性仍需人工檢查。
+
+輸出新增 `nlp_sentiment`：
+
+- SnowNLP：positive_probability 為套件的正面機率，score 為 `2 × probability − 1`。大於 0.6 標為 positive、小於 0.4 標為 negative，其餘為 neutral。neutral 是人為設置的區間，不是模型學到的第三類；probabilities 為 null，避免誤作三類機率。tokens 為簡體中文斷詞結果。
+- VADER：score 為 compound（-1 到 1）；>= 0.05 為 positive、<= -0.05 為 negative，其餘 neutral。components 保留 pos、neu、neg、compound；這些分量不是三類分類機率，probabilities 為 null。tokens 僅為英文詞抽取，情緒本身使用 VADER 的原文分析。
+- 每筆結果包含 backend、normalization 與 status。未啟用 NLP 時欄位為 null。分數不是準確率，且不同方法的尺度與中性門檻不可直接互換。
+
+### 比較及交易特徵
+
+比較詞典、分群、Naive Bayes（若有 train）與 NLP 套件情緒：
+
+```sh
+.venv/bin/python -m quantpilot.compare --news news_eval.csv --periods periods.csv --nlp-backend auto --output nlp_comparison.json
+```
+
+交易特徵改用 NLP 套件情緒（另需安裝 requirements-strategy.txt）：
+
+```sh
+.venv/bin/python -m quantpilot.feature_strategy --news news_history.csv --periods periods.csv --test-start 2026-10-01T09:01:00+08:00 --nlp-backend auto --output nlp_feature_comparison.json
+```
+
+Windows 以 `.\.venv\Scripts\python.exe` 取代 `.venv/bin/python`。feature_strategy 的 `--nlp-backend` 與 `--deep-model` 擇一；sentiment 與 compare 可以同時輸出多種方法。交易向量仍使用前述 TF-IDF 切詞，NLP tokens 目前作為輸出與檢查資訊，不會自動改變詞彙向量。
+
+NLP 方法不需要人工訓練檔即可推論，但這是套件已訓練模型／內建詞典的結果。若要改善台股財經效果，需要領域標註資料、獨立驗證期間及扣成本績效比較；本次新增的是工具整合，不能預先宣稱提升分類準確率或交易收益。
+
+
+## 使用現有套件的事件式回測框架
+
+新增 `quantpilot.backtest`，以 [backtesting.py](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html) 與 pandas 執行逐根 OHLC 回測。這與前面的期間報酬比較工具互補：前者研究特徵與預測，這個引擎負責訊號對齊、現金、整股部位、成交、持有期間與交易成本。
+
+### 安裝及合成範例
+
+macOS：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-backtest.txt
+.venv/bin/python -m quantpilot.backtest --prices examples/ohlc_demo.csv --signals examples/signals_demo.csv --hold-bars 1 --output-dir data/backtest_demo
+```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-backtest.txt
+.\.venv\Scripts\python.exe -m quantpilot.backtest --prices examples/ohlc_demo.csv --signals examples/signals_demo.csv --hold-bars 1 --output-dir data/backtest_demo
+```
+
+examples/ohlc_demo.csv 與 signals_demo.csv 完全為合成資料，用來驗證框架；不是台股歷史行情或獲利證據。建議使用 Python 3.11／3.12，並執行 `.venv/bin/python -m unittest discover -s tests`（Windows 替換 Python 路徑）驗證安裝環境。
+
+### 價格與訊號介面
+
+價格 CSV 必須包含帶時區的 open_at、close_at 與 Open、High、Low、Close；Volume、symbol 可選：
+
+```csv
+symbol,open_at,close_at,Open,High,Low,Close,Volume
+DEMO,2026-01-05T09:00:00+08:00,2026-01-05T13:30:00+08:00,100,102,99,100.5,100000
+```
+
+open_at 表示該根實際開盤時點，close_at 表示資料完整可用時點；不能只提供未標時區的日期。資料需至少四根、時間不重複／不重疊、OHLC 價格合法，且一次只含一個標的。請自行確認價格的股利、除權息及拆股處理方式一致。
+
+訊號 CSV 需有 `available_at,score`，available_at 是實際可取得訊號的時點。score 可為情緒分數，或以小數表示的預測報酬，但必須依其語義設定門檻。請先篩選與交易標的相關的新聞，並使用去重後資料；引擎不會自動辨識公司或去除輸入訊號重複。
+
+可直接使用現有情緒 JSONL：
+
+```sh
+.venv/bin/python -m quantpilot.backtest --prices prices.csv --signals data/news_nlp_sentiment.jsonl --method nlp_sentiment --threshold 0.2 --hold-bars 2 --output-dir data/nlp_backtest
+```
+
+也可使用 feature_strategy／compare 的比較 JSON（不是 JSONL），指定方法：
+
+```sh
+.venv/bin/python -m quantpilot.backtest --prices prices.csv --signals feature_comparison.json --method combined --threshold 0.003 --hold-bars 1 --output-dir data/feature_backtest
+```
+
+比較報告 adapter 使用每期 entry_at 當作預測最早可用時間，不會把預測提前到前一天。由於本框架於價格棒完成後才下單，實際進場可能晚於原報告的 entry_at；持有區間與研究目標可能改變，不能直接重現或等同原報告的績效。實務上最好將實際產生的樣本外預測保存為有可信 available_at 的訊號 CSV。
+
+### 成交及風險假設
+
+在每根 close_at 嚴格之前新取得的訊號取平均；剛好等於 close_at 的訊號延後到下一根判斷。於該根完成後送出市場單，使用**下一根 Open**成交（trade_on_close=False）。夜間新聞在下一根收盤前彙整、再於其後一根開盤成交；此版不在開盤前另行決策，屬保守且較慢的訊號流程。
+
+第一根為引擎暖機，不交易；該根訊號與早於價格資料範圍的訊號不補用，會記錄在 signal_quality。持有期間內的新訊號仍按時間消耗，但不加碼，也不提前改變出場。每次最多一筆做多部位，沒有訊號或分數未超過 threshold 時空手。
+
+- `--cash 1000000`：起始資金。
+- `--allocation 0.9`：每筆使用可用資金的比例（0 到 1，不含邊界）；引擎以整股交易，不要求整張，適用台股零股研究假設。
+- `--hold-bars 1`：在下一根開盤進場，持有一根後於再下一根開盤出場；設 2 表示持有兩根。日線可對應隔日／數日，仍依實際提供的價格棒計數。
+- `--threshold 0.2`：僅在 score 大於門檻時進場；若分數是報酬預測，門檻應改成同尺度的小數，例如 0.003 僅為示範。
+- `--cost-bps 10`：每次進場與出場的名目金額各扣此比例。請把完整來回手續費、交易稅與滑價的估計折算為對稱有效成本；不是精確的台股非對稱稅費模型，也不是建議的成本值。
+
+沒有足夠後續價格棒完成持有的訊號不再進場，避免在最後一根強制用已知價格回填成交。若有持倉，正常送出市場出場單，在後續真實價格棒 Open 成交。框架不模擬漲跌停不能成交、停牌、量能容量、市場衝擊、放空、槓桿或即時下單。
+
+### 回測輸出
+
+- report.json：參數、訊號範圍／暖機診斷、總報酬、最大回撤、交易數、勝率、Profit Factor、持倉時間占比與期末資金；未定義／無限的數值輸出 null。
+- trades.csv：逐筆整股數量、進出場時間／價格、手續費、PnL、交易報酬等引擎資料。
+- equity.csv：逐根資金／回撤曲線。
+- aligned_signals.csv：每根 close_at、平均訊號與新聞數，便於檢查時間對齊。
+
+交易時間是實際 Open 的時間；equity.csv 的索引是該根 open_at，但 Equity 是該根收盤估值，解讀時請對照 aligned_signals.csv 的 close_at。持倉中以 Close 估值，最大回撤也以逐根收盤資金觀察，不是棒內最低點。Buy & Hold Return 是引擎的價格基準，不包含相同部位配置與交易成本，不能直接當成公平的可交易淨績效基準。
+
+預設不列出年化 Sharpe，避免把未經驗證的非等間隔資料年化。調整持有期間、門檻與成本應使用獨立驗證區間，保留未參與調整的後續期間測試。這個框架驗證成交與時間機制，但不能保證輸入預測沒有訓練洩漏，也不會以合成範例宣稱策略有效。

@@ -189,6 +189,7 @@ def main():
     parser.add_argument('--allow-short', action='store_true')
     parser.add_argument('--deep-model', action='append', default=[], help='可重複指定以比較多個模型')
     parser.add_argument('--device', default='cpu')
+    parser.add_argument('--nlp-backend', choices=('auto', 'snownlp', 'vader'))
     args = parser.parse_args()
     try:
         news = load_news(args.news)
@@ -198,6 +199,9 @@ def main():
         if args.deep_model:
             from .deep_sentiment import DeepSentiment
             deep = {'deep:' + name: DeepSentiment(name, args.device) for name in args.deep_model}
+        if args.nlp_backend:
+            from .nlp_sentiment import NLPSentiment
+            deep['nlp:' + args.nlp_backend] = NLPSentiment(args.nlp_backend)
         report = compare(news, periods, training, args.threshold, args.cost_bps, args.allow_short, deep)
         Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
     except (ValueError, OSError, KeyError, RuntimeError, ImportError) as exc:

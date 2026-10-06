@@ -145,6 +145,7 @@ def main():
     parser.add_argument("--device", default="cpu", help="cpu、mps（Apple Silicon）或 cuda:0")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=512, help="包含特殊 token 的最大輸入長度")
+    parser.add_argument("--nlp-backend", choices=('auto', 'snownlp', 'vader'), help="啟用 Python NLP 套件情緒分析")
     args = parser.parse_args()
     try:
         rows = read_csv(args.input)
@@ -156,8 +157,13 @@ def main():
             deep_model = DeepSentiment(args.deep_model, args.device, args.batch_size, args.max_length)
             deep_results = deep_model.predict_many([row["text"] for row in rows])
         results = []
-        for row, cluster, deep in zip(rows, clusters, deep_results):
+        nlp_results = [None] * len(rows)
+        if args.nlp_backend:
+            from .nlp_sentiment import NLPSentiment
+            nlp_results = NLPSentiment(args.nlp_backend).predict_many([row['text'] for row in rows])
+        for row, cluster, deep, nlp in zip(rows, clusters, deep_results, nlp_results):
             results.append({**row, "supervised": model.predict(row["text"]) if model else None,
+                            "nlp_sentiment": nlp,
                             "deep_learning": deep,
                             "unsupervised_cluster": cluster,
                             "unsupervised_lexicon": lexicon_sentiment(row["text"])})
