@@ -214,3 +214,71 @@ py -3 -m quantpilot.compare --news examples/news_demo.csv --train examples/train
 各方法的分數尺度不同，先用固定門檻對照，再於獨立驗證期間分別選定門檻，最後用未參與選擇的測試期間比較。不要在同一段測試資料反覆調參後挑最高報酬；分類 F1 高也不代表可獲利。時間順序切分的原則見 [scikit-learn 官方文件](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)。此工具檢查資料時間，但無法驗證新聞的真實首次取得時間或預訓練模型的歷史可用性；使用回測當時尚未發布的模型，結果只能視為回溯研究。
 
 目前未提供真實台股回測結論。應以獨立期間的扣成本報酬、回撤、交易數及不同市場階段穩定性決定是否值得繼續研究。回測為假設績效，與實際交易表現不同，參考 [SEC 投資人績效說明](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins-47)。
+
+
+## 情緒與詞彙向量作為交易特徵
+
+新增 `quantpilot.feature_strategy`：使用 Ridge 正則化迴歸預測每個持有期間的價格報酬，不把正面情緒直接等同上漲。每期彙整在進場前已取得且尚未使用的新聞，建立以下特徵：
+
+- 情緒平均值、情緒分散程度、正面／負面／中性新聞比例。
+- `log(1 + 新聞數)` 與有效且未截斷的情緒結果比例。
+- TF-IDF 詞彙向量，使用現有英文詞及中文字元 unigram／bigram 切詞，預設最多 2,000 維。這是稀疏詞彙向量，尚未加入 Word2Vec 或 Transformer 語意 embedding。
+
+預設情緒由詞典產生；可用 `--deep-model` 改為 Transformer，並安裝 requirements-deep.txt。此流程不使用人工新聞 label 作為交易特徵，也不使用未來價格作為輸入特徵。迴歸目標為 `exit_price / entry_price - 1`，僅供監督式訓練及事後評估。
+
+### 安裝與執行
+
+在專案根目錄執行。新聞與價格使用前述 `available_at` 及進出場 CSV 格式，資料應同時涵蓋訓練與後續測試期間；所有時間必須包含時區，且一次只研究一個標的。以下資料為合成範例，12 個期間中後 6 個用來測試；日期與價格不代表真實台股交易。
+
+macOS：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-strategy.txt
+.venv/bin/python -m quantpilot.feature_strategy --news examples/feature_news_demo.csv --periods examples/feature_periods_demo.csv --test-start 2026-01-23T09:01:00+08:00 --min-train 3 --output feature_comparison.json
+.venv/bin/python -m unittest discover -s tests
+```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-strategy.txt
+.\.venv\Scripts\python.exe -m quantpilot.feature_strategy --news examples/feature_news_demo.csv --periods examples/feature_periods_demo.csv --test-start 2026-01-23T09:01:00+08:00 --min-train 3 --output feature_comparison.json
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+正式研究請替換為歷史資料，省略 `--min-train 3` 以使用預設最少 30 個歷史期間；30 只是最低樣本門檻，並非足以支持 2,000 維模型或交易結論的保證。
+
+### 逐期訓練與消融比較
+
+每個測試進場時點，使用出場時間**嚴格早於進場**的全部歷史期間重新訓練（expanding window）。TF-IDF 詞彙、IDF、情緒特徵標準化與 Ridge 係數均只使用當時的訓練資料。後續測試期間已出場的結果可以用於下一期重訓，這是逐期更新的策略，不是固定模型留出測試。前處理與資料洩漏原則見 [scikit-learn 官方文件](https://scikit-learn.org/stable/common_pitfalls.html#data-leakage)。
+
+報告在相同測試期間比較六組策略：
+
+| 名稱 | 輸入與行為 |
+| --- | --- |
+| sentiment_only | 只用七個情緒／新聞統計特徵 |
+| words_only | 只用 TF-IDF 詞彙向量 |
+| combined | 合併情緒統計與 TF-IDF |
+| historical_mean | 用已完成歷史期間平均報酬預測 |
+| long_every_period | 每個評估期間做多並完整出場 |
+| cash | 全程空手 |
+
+前三組採相同 Ridge 設定，藉此檢查合併特徵是否比單組特徵提供更好的樣本外預測與交易績效。合併不一定較好；高維詞彙特徵可能過擬合。
+
+### 決策與可設定參數
+
+預設做多／空手，條件為 `預測報酬 > 2 × cost-bps / 10000 + edge`。`--edge` 預設 0.001（額外要求 0.1% 預測淨報酬），`--cost-bps` 預設 10 僅為示範，台股成本需自行設定。無新新聞時，四組預測策略皆空手。
+
+- `--alpha 1`：Ridge 正則化強度，必須大於零。
+- `--max-features 2000`：TF-IDF 維度上限；資料較少時可降低。
+- `--min-train 30`：最少已完成歷史期間；不足的測試期會跳過並記錄。
+- `--test-start`：含時區的測試起點。
+- `--deep-model lxyuan/distilbert-base-multilingual-cased-sentiments-student`：改用深度情緒特徵。
+
+報告包含預測 MAE／RMSE、扣成本前後報酬、最大回撤、交易數、勝率、每期特徵、預測值、訓練筆數、詞彙數及最近訓練出場時間。向量依每期訓練詞彙表重新建立；報告不展開所有稀疏向量。無有效文字的訓練資料使用零詞彙特徵及截距基準。
+
+調整 alpha、詞彙維度、edge 與成本前，先保留獨立驗證期間，再鎖定設定測試後續期間。未加入超參數搜尋、成交限制、新聞時間衰減、持倉期間內價格路徑、保存模型或即時下單；交易成本與期間邊界假設與前述回測一致。預訓練模型在歷史上的可用性、新聞與價格品質仍需自行驗證。
+
+單元測試以真實 scikit-learn 迴歸驗證整合、訓練時序、未來資料不影響過去決策與成本。範例僅驗證流程，尚無真實台股資料證明合併特徵提升收益。
