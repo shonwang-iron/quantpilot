@@ -1,0 +1,6 @@
+symbol,company,aliases,metric,value,unit,period,available_at,source_url,basis,is_demo
+DEMO1,範例半導體,示範半導體|Demo Semiconductor,pe,18.5,倍,2026-10-05,2026-10-06T08:00:00+08:00,https://example.com/synthetic-financial-data,合成數值非真實公司,true
+DEMO1,範例半導體,示範半導體|Demo Semiconductor,pb,3.2,倍,2026-10-05,2026-10-06T08:00:00+08:00,https://example.com/synthetic-financial-data,合成數值非真實公司,true
+DEMO1,範例半導體,示範半導體|Demo Semiconductor,dividend_yield,2.4,%,2026-10-05,2026-10-06T08:00:00+08:00,https://example.com/synthetic-financial-data,合成數值非真實公司,true
+DEMO1,範例半導體,示範半導體|Demo Semiconductor,roe,16,%,2026-Q2,2026-08-10T08:00:00+08:00,https://example.com/synthetic-financial-data,合成季度數值,true
+DEMO2,範例電子,Demo Electronics,pe,22,倍,2026-10-05,2026-10-06T08:00:00+08:00,https://example.com/synthetic-financial-data,合成數值非真實公司,true

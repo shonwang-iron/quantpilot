@@ -542,3 +542,75 @@ open_at 表示該根實際開盤時點，close_at 表示資料完整可用時點
 交易時間是實際 Open 的時間；equity.csv 的索引是該根 open_at，但 Equity 是該根收盤估值，解讀時請對照 aligned_signals.csv 的 close_at。持倉中以 Close 估值，最大回撤也以逐根收盤資金觀察，不是棒內最低點。Buy & Hold Return 是引擎的價格基準，不包含相同部位配置與交易成本，不能直接當成公平的可交易淨績效基準。
 
 預設不列出年化 Sharpe，避免把未經驗證的非等間隔資料年化。調整持有期間、門檻與成本應使用獨立驗證區間，保留未參與調整的後續期間測試。這個框架驗證成交與時間機制，但不能保證輸入預測沒有訓練洩漏，也不會以合成範例宣稱策略有效。
+
+
+## NLP 財務比率會話聊天機器人雛形
+
+新增 `quantpilot.financial_chat`：終端機互動聊天，辨識公司名稱／代號、財務指標及追問，從結構化資料檢索數值。SnowNLP 提供中文斷詞；公司與指標解析採可檢查的規則式 NLU，不使用生成模型猜測數字。`--nlp simple` 可改用標準函式庫模式。
+
+### 啟動與資料來源
+
+先依 Python 安裝章節建立 .venv，安裝 requirements-nlp.txt。
+
+macOS，查詢證交所正式資料：
+
+```sh
+.venv/bin/python -m pip install -r requirements-nlp.txt
+.venv/bin/python -m quantpilot.financial_chat --twse --refresh
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-nlp.txt
+.\.venv\Scripts\python.exe -m quantpilot.financial_chat --twse --refresh
+```
+
+證交所來源為 [官方 OpenAPI](https://openapi.twse.com.tw/)，使用 `/v1/exchangeReport/BWIBBU_ALL`，提供上市股票日資料的本益比、股價淨值比、殖利率。名稱依官方 Name 欄位辨識。首次連線或 --refresh 才下載，後續可讀 `data/financial_ratios.json` 快取；回覆永遠顯示資料期間與實際取得時間。快取不代表即時資料；刷新失敗時直接報錯，不會無提示使用舊資料。
+
+免網路合成示範（不是真實公司／數值）：
+
+```sh
+.venv/bin/python -m quantpilot.financial_chat --data examples/financial_demo.csv
+```
+
+Windows 替換虛擬環境 Python 路徑；不安裝 NLP 套件時可用 `python3 -m quantpilot.financial_chat --data examples/financial_demo.csv --nlp simple`（Windows 使用 py -3）。
+
+### 對話範例
+
+正式資料可以問：
+
+```text
+你：台積電本益比是多少？
+你：那殖利率呢？
+你：台積電和聯發科的股價淨值比
+你：什麼是本益比？
+你：重設
+你：exit
+```
+
+合成資料改問「範例半導體本益比」、「那 ROE 呢？」。每則有數值的回答包含公司、代號、指標、單位、期間、口徑、取得時間與 HTTPS 來源。資料缺少的比率／無效值會明確顯示，不把缺失當作零，也不補出未提供的數字。
+
+單次查詢可指定 `--question "2330 本益比"`。公司脈絡只存在當次互動程序的記憶體，不保存聊天記錄；重設會清空脈絡。未知公司不會自動套用上一家公司的資料。沒有指定公司時，只有可辨識的追問或單純指標名稱才沿用公司脈絡。
+
+### 擴充財務指標
+
+可匯入有來源的 CSV／JSON，支援 pe、pb、dividend_yield、roe、gross_margin、operating_margin、net_margin、eps、current_ratio、debt_ratio。官方日資料只有前三項；ROE 等需另外取得財報來源，不能由三項行情比率推算。
+
+標準資料每列至少包含：
+
+```csv
+symbol,company,aliases,metric,value,unit,period,available_at,source_url,basis,is_demo
+DEMO1,範例半導體,示範半導體|Demo Semiconductor,roe,16,%,2026-Q2,2026-08-10T08:00:00+08:00,https://example.com/synthetic-financial-data,合成季度數值,true
+```
+
+- period 為 YYYY-MM-DD 或 YYYY-Q1 至 YYYY-Q4；available_at 必須為帶時區的實際取得時間。
+- aliases 可用 `|` 分隔公司別名；symbol 必須為字串以保留前導零。
+- 指標單位：pe、pb、current_ratio 為「倍」；殖利率、ROE、各利潤率、debt_ratio 為「%」（例如 16 表示 16%，不是 0.16）；eps 為「元/股」，來源與 basis 需註明貨幣及基本／稀釋口徑。
+- 同公司／指標／期間不可重複；不同版本或口徑請先整理。is_demo=true 的數字會明確標為合成示範。
+
+### 原型範圍
+
+這是財務資料檢索原型，尚無網頁介面、語音、生成式 LLM、多使用者帳號、投資建議生成或下單功能。支援資料中最新期間的查詢；不解析指定歷史／相對期間，不能把最新數字當成「去年」資料。跨公司比較會列出每筆期間與口徑，不自動斷言不同期間的公司誰較便宜。它目前只提供已有資料中的股票／指標，不包含所有 ETF、衍生工具或上櫃股票。
+
+預訓練 NLP 僅輔助文字處理，所有數值均來自來源記錄；公司別名不完整、複雜句型或語意不明時會請使用者指定公司／指標。回覆可作為查詢入口，交易研究仍需結合價格、風險、新聞及獨立回測，不能只依單一比率決定買賣。
