@@ -17,7 +17,7 @@ text,label
 
 ## 執行前準備
 
-安裝 Python 3，確認終端機可以執行 Python。本專案只使用標準函式庫，不需要安裝第三方套件或建立虛擬環境。
+安裝 Python 3，確認終端機可以執行 Python。基準分析與比較工具只使用標準函式庫，不需要第三方套件；啟用深度學習時請依下方說明安裝。
 
 將 `news.csv` 與 `labeled_news.csv` 放在專案根目錄（與 README.md 同一層）。`news.csv` 範例：
 
@@ -143,3 +143,74 @@ py -3 -m venv .venv
 新增的 `deep_learning` 欄位包含 `label`、`probabilities`、`confidence`、`score`（P(positive) − P(negative)）、模型名稱、原始 token 數與截斷狀態。未啟用時為 `null`。機率與 confidence 未校準，不能當成準確率；程式也不會將模型錯誤偽裝成 neutral。
 
 此整合使用現有模型推論，尚未以專案新聞資料驗證準確率提升。正式比較請使用同一份獨立人工標註測試集，計算 macro-F1 與各類別 precision/recall；若要提高特定財經領域的效果，後續需要足量標註資料進行微調。單元測試使用模擬模型驗證整合邏輯，不代表已執行真實模型推論。
+
+
+## 台股情緒方法比較與策略回測
+
+| 方法 | 優點 | 比較時須注意 | 策略研究用途 |
+| --- | --- | --- | --- |
+| 情緒詞典 | 快速、可解釋、免訓練 | 否定、語境與新詞可能誤判 | 作為成本低的基準 |
+| Naive Bayes | 可用領域標註資料訓練 | 依賴標註品質，弱於複雜語境 | 檢查領域標註是否有幫助 |
+| TF-IDF + K-means | 可觀察新聞群組 | 群組通常可能反映主題；情緒仍依賴詞典 | 作為探索性對照，不是獨立情緒真值 |
+| 多語言 DistilBERT | 可使用上下文 | 繁體中文財經需驗證；長文可能截斷 | 與基準比較是否改善分類與交易績效 |
+| FinBERT | 英文財經領域模型 | 不能直接當成台股中文模型 | 有英文新聞時另行比較 |
+
+### 資料與時間規則
+
+每次比較一個標的，請先篩選與該公司相關的新聞。`--news` CSV 需有 `text,available_at`；`label` 可選，提供後才能計算分類指標。`available_at` 是實際取得新聞、可產生訊號的時間，必須含時區（台股使用 `+08:00`）。資料依時間排序，完全相同的文字只保留最早一筆；近似轉載仍需自行清理。
+
+`--train` CSV 需有 `text,available_at,label`。所有訓練新聞必須早於第一筆進場時間，且不能與評估新聞文字重複。訓練標註也必須在回測起點前可取得。模型於回測期間固定，不會拿未來標註重訓。
+
+`--periods` CSV 指定實際可成交的進出場時間與價格：
+
+```csv
+symbol,entry_at,exit_at,entry_price,exit_price
+DEMO,2026-01-06T09:01:00+08:00,2026-01-07T09:01:00+08:00,100,102
+```
+
+價格請使用與進出場時點一致的資料，並一致處理除權息、拆股與股利；本工具不自動調整。隔日交易可用次日同一時點出場，持有數日則延後出場時間。交易期間不可重疊；一個標的每期至多一筆持倉。範例時間與價格都是合成資料。
+
+只有嚴格早於進場的新聞可產生訊號；每筆新聞在第一次可用的交易期間使用一次。同期間多則新聞取平均情緒分數。請讓評估新聞從研究起始日開始，避免第一期混入過久的舊新聞；本版沒有自動新聞衰減。分群在每期只使用當時已取得的歷史新聞重新擬合，不使用 `sentiment.jsonl` 中整批擬合的群組，避免未來資訊洩漏。
+
+### 執行比較
+
+以下範例純粹驗證流程，不是投資績效證據。`examples/` 中的新聞、標註及價格均為合成資料。
+
+macOS：
+
+```sh
+python3 -m quantpilot.compare --news examples/news_demo.csv --train examples/train_demo.csv --periods examples/periods_demo.csv --threshold 0.2 --cost-bps 10 --output comparison.json
+```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m quantpilot.compare --news examples/news_demo.csv --train examples/train_demo.csv --periods examples/periods_demo.csv --threshold 0.2 --cost-bps 10 --output comparison.json
+```
+
+加入深度學習比較（先安裝 requirements-deep.txt；Windows 改用虛擬環境 Python）：
+
+```sh
+.venv/bin/python -m quantpilot.compare --news news_eval.csv --train train_history.csv --periods periods.csv --deep-model lxyuan/distilbert-base-multilingual-cased-sentiments-student --threshold 0.2 --cost-bps 10 --output comparison.json
+```
+
+`--deep-model` 可重複指定以比較多個三類情緒模型；請確認每個模型適用於輸入新聞語言。若沒有訓練資料可省略 `--train`，結果不包含 Naive Bayes。
+
+### 策略與績效解讀
+
+預設做多／空手：平均情緒分數大於 threshold 時做多，其餘空手；無新聞也空手。每期進場與出場後歸零，下一期重新判斷；資金逐期複利。`--allow-short` 才啟用負面訊號放空，但未模擬台股融券可用性、借券費、漲跌停與成交限制。
+
+`--cost-bps` 是每邊有效成本，每筆完整交易扣兩次，涵蓋自訂手續費、滑價與交易稅的近似值。若買賣成本不對稱，可把完整來回成本除以二作為此參數。10 bps 只是流程範例，不是台股適用成本建議；請依交易標的、券商及交易方式設定。工具假設可按指定價格完整成交，不含容量、市場衝擊、隔夜跳空成交限制與閒置資金利息。
+
+`comparison.json` 提供：
+
+- 人工標註對照：accuracy、macro-F1、每類 precision/recall/F1、support 及混淆矩陣；缺少人工標註時為 null。
+- 方法間的情緒標籤一致率，以及每期訊號、部位、成本前後報酬。
+- 成本前後總報酬、期末資金最大回撤、完整交易數、勝率及交易期間占比。
+- 同期間每期做多並完整出場的基準與空手基準。做多基準不是連續買入持有；區間外報酬不計入。
+
+`untruncated_ok_news` 表示狀態為 ok 的新聞數，並非準確率；分群的情緒解讀仍來自詞典。最大回撤只觀察各期間結束時的資金，無法顯示持倉期間內的回撤。不計算年化 Sharpe，因為使用者提供的期間可能不等長。
+
+各方法的分數尺度不同，先用固定門檻對照，再於獨立驗證期間分別選定門檻，最後用未參與選擇的測試期間比較。不要在同一段測試資料反覆調參後挑最高報酬；分類 F1 高也不代表可獲利。時間順序切分的原則見 [scikit-learn 官方文件](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)。此工具檢查資料時間，但無法驗證新聞的真實首次取得時間或預訓練模型的歷史可用性；使用回測當時尚未發布的模型，結果只能視為回溯研究。
+
+目前未提供真實台股回測結論。應以獨立期間的扣成本報酬、回撤、交易數及不同市場階段穩定性決定是否值得繼續研究。回測為假設績效，與實際交易表現不同，參考 [SEC 投資人績效說明](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins-47)。
