@@ -62,6 +62,7 @@ python3.13 -m venv .venv
 | TF-IDF／Ridge 交易特徵 | requirements-strategy.txt |
 | backtesting.py 回測 | requirements-backtest.txt |
 | Transformer 深度學習情緒 | requirements-deep.txt |
+| Double DQN 深度強化學習交易 | requirements-rl.txt |
 
 例如安裝回測套件：
 
@@ -88,6 +89,7 @@ python3.13 -m venv .venv
 | 深度學習 | 可選多語言 DistilBERT／FinBERT、批次推論、三類機率及長文截斷標記 |
 | 方法比較 | 情緒一致率、accuracy、macro-F1、各類別 precision／recall／F1 與混淆矩陣 |
 | 交易特徵 | 情緒統計＋TF-IDF、Ridge 報酬預測、只用情緒／只用詞彙／合併特徵的消融比較 |
+| 強化學習 | Q-learning 基準與 Double DQN 買進／賣出／持有代理、驗證集調參、獨立測試回測及政策匯出 |
 | 時序驗證 | 逐期以已完成歷史資料訓練，詞彙表、IDF 及標準化僅在訓練資料擬合 |
 | 策略回測 | 期間報酬比較及 backtesting.py 引擎、下一根開盤成交、持有根數、資金配置與雙邊成本 |
 | 回測報告 | 扣成本報酬、最大回撤、勝率、交易數、交易明細、資金曲線與訊號對齊表 |
@@ -98,7 +100,7 @@ python3.13 -m venv .venv
 
 ### 驗證狀態與目前範圍
 
-- 目前版本 **55 項測試通過**，包含資料處理、情緒介面、時序限制、回測成交及聊天功能。
+- 目前版本 **71 項測試通過**，包含資料處理、情緒介面、時序限制、回測成交及聊天功能。
 - 已實際驗證多來源 RSS 收集、新聞 NLP 分析、證交所正式財務資料、公司追問及產業新聞更新。
 - 交易特徵與回測以合成資料驗證流程；尚未以真實台股資料證明策略收益。
 - Transformer 介面測試使用模擬模型；尚未驗證真實深度模型推論與準確率提升。
@@ -707,3 +709,113 @@ python3 -m quantpilot.financial_chat --data examples/financial_demo.csv --news-d
 ```
 
 Windows 把 python3 改為 py -3。此範例為合成資料，窗口相對執行時間；資料日期在 2026-10-06，日期過久時需調整示範資料或窗口。真實驗證曾成功查詢台積電快取新聞，以及更新中央社／Yahoo 來源後查詢半導體新聞；這是流程驗證，不是對模型準確率或市場情緒的驗證。
+
+
+## 強化學習交易策略：政策制定、參數最佳化、回溯測試
+
+`quantpilot.rl_strategy` 提供表格型 Q-learning 原型，只需 Python 標準函式庫。演算法參考 [Watkins 與 Dayan 的 Q-learning 論文](https://www.gatsby.ucl.ac.uk/~dayan/papers/wd92.html)。這是有限狀態的強化學習基準，另有下節 Double DQN 深度強化學習實作，PPO 尚未加入。
+
+1. **政策制定**：狀態包含新聞平均情緒（±0.2 分箱）、最近一個已完成期間報酬（±0.5% 分箱）及是否有新新聞。動作為空手或做多；用 epsilon-greedy 探索與 Bellman 更新學習 Q 表，未知狀態及同分時空手。新聞取得時間必須嚴格早於進場，歷史報酬必須在進場前已完成。
+2. **參數最佳化**：只在訓練集更新 Q 表，搜尋學習率 alpha、折扣 gamma、探索率 epsilon；以驗證集「扣成本總報酬 − 最大回撤絕對值」選擇參數。同分取首個組合。跨訓練／驗證或驗證／測試邊界且尚未完成的期間會排除。所選政策保留訓練結果，不用驗證集重訓。
+3. **回溯測試**：凍結選定政策，在獨立測試期間執行；輸出扣成本報酬、最大回撤、交易數、勝率、期間曝險比例，並與每期做多及空手比較。測試期的已完成報酬可更新下一期觀測狀態，但不更新政策或挑選參數。
+
+獎勵為 `log(1 + 淨報酬)`；做多淨報酬為 `exit_price / entry_price - 1 - 2 * cost_bps / 10000`。每期是一筆獨立、全資金、可分割單位的來回交易，依輸入 `exit_at` 固定出場，沒有跨期間持倉。不是逐根 K 棒的 backtesting.py 成交模擬；尚未建模整張／零股限制、滑價、成交量或稅率差異。`cost-bps` 是每邊成本，應依市場與交易方式自行設定；預設值不代表台股完整交易成本。
+
+沿用交易特徵功能的新聞 CSV 與單一標的、不重疊持有期間 CSV。持有隔日或數日由 `entry_at`／`exit_at` 與實際可成交價格決定。以下資料為合成示範，包含非交易日，不能作為台股績效證據。
+
+macOS：
+
+```sh
+.venv/bin/python -m quantpilot.rl_strategy \
+  --news examples/feature_news_demo.csv \
+  --periods examples/feature_periods_demo.csv \
+  --validation-start "2026-01-23T00:00:00+08:00" \
+  --test-start "2026-02-01T00:00:00+08:00" \
+  --episodes 200 --seed 42 --cost-bps 10 \
+  --output-dir data/rl_demo
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m quantpilot.rl_strategy `
+  --news examples/feature_news_demo.csv `
+  --periods examples/feature_periods_demo.csv `
+  --validation-start "2026-01-23T00:00:00+08:00" `
+  --test-start "2026-02-01T00:00:00+08:00" `
+  --episodes 200 --seed 42 --cost-bps 10 `
+  --output-dir data/rl_demo
+```
+
+可用 `--alphas "0.1,0.3" --gammas "0,0.9" --epsilons "0.1,0.3"` 指定搜尋清單。每個分割至少需要 2 個完整期間，僅供小型示範；真實研究需要更多歷史資料、多個時間窗口及多個種子驗證，避免反覆觀看測試結果調參。
+
+輸出 `policy.json`（Q 表、狀態定義、動作、獎勵與參數）、`report.json`（分割筆數、排除筆數、所有驗證搜尋結果及測試基準比較）、`decisions.csv`（逐期動作、毛／淨報酬、資金曲線）。政策可用 `choose(policy['q_table'], state)` 查詢；CLI 目前執行完整研究流程，尚無獨立載入政策交易或自動下單介面。
+
+已驗證固定種子重現、雙邊成本、終止狀態更新、未知狀態空手、跨分割排除及測試報酬不影響政策／參數搜尋。小量歷史資料的有限分箱不保證符合 Markov 假設，也不保證收斂或實際獲利。
+
+
+## 深度強化學習案例：交易代理與已實現 PnL
+
+`quantpilot.deep_rl` 實作 PyTorch **Double DQN**，包含經驗回放、目標網路、Huber loss、Adam 與梯度裁切。三種離散動作適合以 DQN 家族建立基準，但沒有任何模型可事先保證「目前最適合」或最佳獲利；需在相同資料、成本及時間分割下比較。Double DQN 的動作選擇／價值評估分離參考 [原始論文](https://arxiv.org/abs/1509.06461)。
+
+| 案例元件 | 實作方式 |
+| --- | --- |
+| 代理 | 單一標的、單一單位、做多／空手的交易代理 |
+| 動作 | `hold=0`、`buy=1`、`sell=2`；禁止裸賣、重複買進與末根開倉 |
+| 狀態 | 窗口內相鄰歷史收盤價差的 `sigmoid((close[t]-close[t-1])/price_scale)`；window 個價差需 window+1 根收盤價 |
+| 獎勵 | 買進及持有為 0；賣出為 `賣出價×(1−成本率) − 買進價×(1+成本率)` 的已實現貨幣 PnL |
+| 環境 | 歷史 OHLC 市場模擬，使用前根收盤後的觀測，在下一根開盤成交 |
+| 政策 | 兩層 ReLU MLP 預測三個動作的 Q 值，以庫存／可用資金遮罩限制動作 |
+| 參數最佳化 | 只在訓練期更新網路；驗證期比較 learning-rate、gamma，依扣成本報酬減最大回撤絕對值選擇 |
+| 回溯測試 | 凍結選定網路，獨立測試期間與買進持有一單位、空手比較 |
+
+原始環境獎勵始終保留貨幣 PnL，CSV 的買進／持有 reward 均為 0；訓練時固定除以初始資金以穩定數值，不對虧損截斷，也不使用測試資料估計尺度。每個分割最後一根若有持倉，遮罩限定為**賣出**，在該根開盤平倉並記錄 `forced_exit=true`；因此終止平倉也是有 PnL 獎勵的賣出事件。每個分割重新開始資金及庫存，歷史價格可用於下一分割的窗口暖機，政策不重訓。前根收盤時間必須嚴格早於下一根開盤時間。
+
+價差狀態忠於案例，不加入庫存或買入成本特徵；動作遮罩會使用庫存與資金，因此仍可能存在部分可觀測性。同樣價格窗口可能有不同買入成本，這是本設計限制。預設 `price-scale=1`；高價或大幅波動資料可能令 sigmoid 飽和，可事先設定尺度，不能依測試收益調整。
+
+### 安裝與執行
+
+價格格式沿用 `examples/ohlc_demo.csv`：單一標的、含時區的 `open_at,close_at` 與 `Open,High,Low,Close`，可加 `Volume,symbol`。以下只是 16 根合成價格棒的流程示範，並非實際台股學習效果。
+
+macOS：
+
+```sh
+.venv/bin/python -m pip install -r requirements-rl.txt
+.venv/bin/python -m quantpilot.deep_rl \
+  --prices examples/ohlc_demo.csv --window 3 \
+  --validation-start "2026-01-15T00:00:00+08:00" \
+  --test-start "2026-01-21T00:00:00+08:00" \
+  --episodes 50 --batch-size 4 --hidden 32 --seed 42 \
+  --cash 10000 --cost-bps 10 --output-dir data/dqn_demo
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-rl.txt
+.\.venv\Scripts\python.exe -m quantpilot.deep_rl `
+  --prices examples/ohlc_demo.csv --window 3 `
+  --validation-start "2026-01-15T00:00:00+08:00" `
+  --test-start "2026-01-21T00:00:00+08:00" `
+  --episodes 50 --batch-size 4 --hidden 32 --seed 42 `
+  --cash 10000 --cost-bps 10 --output-dir data/dqn_demo
+```
+
+`--learning-rates "0.001,0.0003" --gammas "0.9,0.99"` 指定驗證搜尋；預設 CPU 訓練。macOS 的 PyTorch wheel 支援範圍依 Python／作業系統版本而異；若安裝失敗，請查閱 [PyTorch 官方安裝頁](https://pytorch.org/get-started/locally/) 選擇支援版本。每個分割至少兩根可交易價格棒，訓練前另需 window+1 根暖機價格；若沒有真正完成梯度更新，程式會拒絕宣稱訓練完成。
+
+輸出 `policy.pt`（網路權重與設定）、`report.json`（搜尋、訓練更新數／loss、測試與基準）、`decisions.csv`（觀測／成交時間、動作、獎勵、資金與權益）、`trades.csv`（已實現損益與強制平倉標記）。可在 Python 載入自己產生的政策：
+
+```python
+import torch
+from quantpilot.deep_rl import network, greedy
+checkpoint = torch.load("data/dqn_demo/policy.pt", map_location="cpu", weights_only=True)
+model = network(checkpoint["config"]["window"], checkpoint["parameters"]["hidden"])
+model.load_state_dict(checkpoint["state_dict"])
+model.eval()
+# state 與 mask 可由相同設定的 TradingMarket.observation()／mask() 取得
+# action = greedy(model, state, mask)
+```
+
+本案例固定交易一單位，沒有槓桿、放空、整張限制或自動下單。股價／成本應使用一致單位並妥善處理公司行動。曝險可能只占資金一小部分，報酬不能直接與全資金策略比較；雙邊 cost-bps 預設不代表完整台股成本，未建模滑價及流動性。稀疏已實現獎勵可能學到一直空手，這是可觀察結果，不應用測試集反覆挑選模型來修飾。
+
+已在 macOS／CPU 的真實 PyTorch 環境跑過上述示範與神經網路梯度更新，政策匯出／重載成功；新增 10 項測試後全專案 71 項通過。Windows 指令已提供，尚未在 Windows 實機執行。合成資料結果僅驗證實作流程，不代表真實台股績效或模型優於其他演算法。
