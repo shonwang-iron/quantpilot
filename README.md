@@ -282,3 +282,62 @@ py -3 -m venv .venv
 調整 alpha、詞彙維度、edge 與成本前，先保留獨立驗證期間，再鎖定設定測試後續期間。未加入超參數搜尋、成交限制、新聞時間衰減、持倉期間內價格路徑、保存模型或即時下單；交易成本與期間邊界假設與前述回測一致。預訓練模型在歷史上的可用性、新聞與價格品質仍需自行驗證。
 
 單元測試以真實 scikit-learn 迴歸驗證整合、訓練時序、未來資料不影響過去決策與成本。範例僅驗證流程，尚無真實台股資料證明合併特徵提升收益。
+
+
+## 多來源新聞收集與情緒分析前處理
+
+新增 `quantpilot.news_data`，只使用 Python 標準函式庫。支援 RSS／Atom 收集及 CSV／JSONL 匯入。預設來源設定位於 `examples/rss_sources.json`：
+
+- [中央社 RSS 服務](https://www.cna.com.tw/about/rss.aspx)：產經證券，`https://feeds.feedburner.com/rsscna/finance`。
+- [Yahoo 股市 RSS 服務](https://tw.stock.yahoo.com/rss-index)：台股動態，`https://tw.stock.yahoo.com/rss?category=tw-market`。
+
+RSS 主要包含標題、摘要與文章連結，本程式不抓取文章全文。這兩個官方 RSS 的免費使用規範限私人／非商業用途，請保留來源；商業策略用途須確認授權。來源條款見中央社上述服務頁及 [Yahoo 使用說明](https://tw.stock.yahoo.com/rss-help)。設定檔可替換為已取得授權的 HTTPS RSS／Atom。
+
+### 收集、清理、分析
+
+請先建立 data 資料夾。collect 會**追加**到原始 JSONL，而 prepare 會讀取累積資料、重新產生去重後的 CSV。重跑收集可保留首次取得時間，不需另外的第三方套件。
+
+macOS：
+
+```sh
+mkdir -p data
+python3 -m quantpilot.news_data collect --sources examples/rss_sources.json --raw-output data/news_raw.jsonl --report data/collection_report.json
+python3 -m quantpilot.news_data prepare --input data/news_raw.jsonl --output data/news_clean.csv --report data/quality_report.json
+python3 -m quantpilot.sentiment --input data/news_clean.csv --output data/news_sentiment.jsonl
+```
+
+Windows PowerShell：
+
+```powershell
+New-Item -ItemType Directory -Force data
+py -3 -m quantpilot.news_data collect --sources examples/rss_sources.json --raw-output data/news_raw.jsonl --report data/collection_report.json
+py -3 -m quantpilot.news_data prepare --input data/news_raw.jsonl --output data/news_clean.csv --report data/quality_report.json
+py -3 -m quantpilot.sentiment --input data/news_clean.csv --output data/news_sentiment.jsonl
+```
+
+需要深度情緒時，安裝 requirements-deep.txt，以虛擬環境 Python 執行最後一個指令並加 `--deep-learning`。本次實際收集的 data/news_sentiment.jsonl 僅執行詞典與分群，supervised 與 deep_learning 為 null；新聞尚無人工情緒標註。
+
+collect 的來源報告列出各來源成功／失敗、筆數與取得時間；來源失敗不會丟失其他來源的成功資料，但指令以非零狀態結束，方便偵測缺失。每個來源有 20 秒 timeout 與 5 MiB 上限。若整批來源都失敗，本次不新增新聞；舊 raw 資料仍保留，不應誤認為本次的新資料。尚未加入排程、API 金鑰來源或重試機制。
+
+### 匯入與篩選
+
+可重複指定 input 合併不同的 CSV／JSONL：
+
+```sh
+python3 -m quantpilot.news_data prepare --input data/news_raw.jsonl --input vendor_news.csv --keyword 台積電 --keyword TSMC --output data/tsmc_news.csv --report data/tsmc_quality.json
+```
+
+多個 keyword 採任一命中；這是文字篩選，不是公司實體辨識，仍需人工檢查關聯性。匯入資料必須有帶時區的 `available_at`，及 `text` 或 `title`／`summary`。建議另附 `source,url,published_at,label`；label 可省略。available_at 必須是可信的實際取得時間，程式不會用發布時間補填或替使用者推定歷史可用時間。
+
+### 前處理與品質紀錄
+
+- 清除 HTML 標籤、script／style、控制字元與多餘空白，進行 Unicode NFKC（如全形數字與百分比）正規化。保留否定詞、標點、數字、百分比與中英混合內容，不自動翻譯或轉換繁簡體。原始文字保留在 raw JSONL。
+- RSS／Atom 發布時間統一為含時區的 UTC；缺少或無法解析則留空並標記。available_at 是每個來源完整讀取後的實際時間；發布晚於取得的資料進入品質報告，不輸出到分析 CSV。
+- 依清理後文字 casefold 雜湊做完全去重，保留最早 available_at 與當時的 title、summary、url、label。不同來源的相同內容可合併；不同摘要或近似轉載仍會保留。URL 移除 utm、fbclid、gclid 與 fragment，但保留文章識別參數；相同 URL 的不同文字視為不同版本。
+- 保留來源、連結及資料 ID；sources 記錄所有重複來源，僅供追溯，包含可能較晚才取得的資訊，**不可直接作為過去策略的來源數特徵**。
+- 空文字、短於 min-chars（預設 4）、無有效取得時間、無效 label、未命中 keyword 等記錄，列入報告並附原始索引。沒有命中不等於沒有新聞，需看報告原因。
+- 重複內容的人工標籤若互相衝突，清空 label 並標記 conflicting_labels，需人工處理後才可用於監督式訓練。不以未來取得的標籤補填較早記錄。
+
+news_clean.csv 可直接供 sentiment、compare 及 feature_strategy 使用。資料時間採 UTC ISO 8601，分析工具會依時區正確比較；Excel 可讀取 UTF-8 BOM CSV。本工具不會自動移除來源署名、造成人工標註、推定缺失時間、擷取股價或把今日抓取的歷史文章當成過去已取得的新聞。
+
+首次實際驗證收集中央社 20 則及 Yahoo 股市 50 則，共 70 則，清理後保留 69 則（完全重複 1 則、拒絕 0 則）。這是一次收集快照，不是完整歷史資料，也不是單一公司的篩選資料；請先依標的篩選，並累積有可信時間的新聞及相應價格，再進行台股回測。資料位於 data/，已排除於 Git 追蹤。
