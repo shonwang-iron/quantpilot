@@ -1,0 +1,2 @@
+backtesting>=0.6.5,<0.7
+pandas>=2.2,<4
