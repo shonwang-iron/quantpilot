@@ -116,10 +116,12 @@ def read_data(path):
 
 
 class FinancialChat:
-    def __init__(self, records, nlp='simple'):
+    def __init__(self, records, nlp='simple', news_service=None):
         self.records = validate_records(records)
         self.company_context = []
         self.nlp = nlp
+        self.news_service = news_service
+        self.news_context = None
         if nlp == 'snownlp':
             from snownlp import SnowNLP
             self.segment = lambda text: list(SnowNLP(text).words)
@@ -158,6 +160,7 @@ class FinancialChat:
             return {'answer': '請輸入公司名稱／代號與財務比率，例如「2330 本益比」。', 'facts': []}
         if text in ('重設', 'reset', '清除對話'):
             self.company_context = []
+            self.news_context = None
             return {'answer': '已清除公司脈絡。', 'facts': []}
         metrics = [key for key, (_, aliases, _, _) in CATALOG.items() if any(matches_alias(text, alias) for alias in aliases)]
         try:
@@ -171,6 +174,11 @@ class FinancialChat:
         unknown = [symbol for symbol in explicit_codes if symbol not in self.companies]
         if unknown:
             return {'answer': '目前資料找不到代號 ' + '、'.join(unknown) + '；請確認市場與資料來源。', 'facts': []}
+        news_intent = any(word in text for word in ('新聞', '情緒', 'news', 'sentiment'))
+        if news_intent:
+            if metrics:
+                return {'answer': '請分開查詢財務指標與新聞情緒，例如先問「台積電本益比」，再問「那新聞情緒呢？」。', 'facts': []}
+            return self.reply_news(text, symbols)
         definition = any(word in text for word in ('什麼', '意思', '定義', '解釋', 'what is', 'definition'))
         parsed = {'tokens': self.segment(question), 'metrics': metrics, 'companies': symbols, 'nlp': self.nlp}
         if definition and metrics:
@@ -209,6 +217,64 @@ class FinancialChat:
                              f"口徑：{row['basis'] or '匯入資料，請確認計算口徑'}；取得：{row['available_at']}\n來源：{row['source_url']}")
         return {'answer': '\n\n'.join(lines), 'facts': facts, 'parsed': parsed}
 
+    def reply_news(self, text, symbols):
+        from .chat_news import INDUSTRIES
+        if self.news_service is None:
+            return {'answer': '新聞功能尚未設定，請提供 --news-data 或 --news-sources。', 'facts': []}
+        industry_text = text
+        for symbol in symbols:
+            for alias in sorted(self.companies[symbol]['aliases'], key=len, reverse=True):
+                industry_text = industry_text.replace(normalize(alias), '')
+        industries = [name for name in INDUSTRIES if name in industry_text or
+                      (name == '人工智慧' and matches_alias(industry_text, 'AI'))]
+        if symbols and industries:
+            return {'answer': '請一次指定公司或產業，例如「台積電新聞」或「半導體產業新聞」。', 'facts': []}
+        target_symbol = None
+        if symbols:
+            if len(symbols) > 1:
+                return {'answer': '請先查詢一家公司的新聞，避免把多家公司情緒混在一起。', 'facts': []}
+            company = self.companies[symbols[0]]
+            terms = sorted(company['aliases'])
+            subject = company['name'] + '（' + symbols[0] + '）'
+            self.company_context = symbols
+            target_symbol = symbols[0]
+            self.news_context = (terms, subject, target_symbol)
+        elif industries:
+            if len(industries) != 1:
+                return {'answer': '請一次指定一個產業。', 'facts': []}
+            subject = industries[0]
+            terms = INDUSTRIES[subject]
+            self.company_context = []
+            self.news_context = (terms, subject, None)
+        else:
+            remaining = re.sub(r'這家公司|該公司|抓取|抓|最新|相關|新聞|情緒|分析|更新|幫我|看看|如何|那|它|的|呢|[\s?？!！,，。]+', '', text)
+            if remaining:
+                return {'answer': '請指定可辨識的公司名稱／代號，或半導體、金融、人工智慧、航運、電動車產業。', 'facts': []}
+            if self.company_context:
+                if len(self.company_context) != 1:
+                    return {'answer': '目前有多家公司脈絡，請指定其中一家查詢新聞。', 'facts': []}
+                company = self.companies[self.company_context[0]]
+                terms, subject = sorted(company['aliases']), company['name']
+                target_symbol = self.company_context[0]
+            elif self.news_context:
+                terms, subject, target_symbol = self.news_context
+            else:
+                return {'answer': '請先指定公司或產業，再追問新聞與情緒。', 'facts': []}
+        try:
+            def company_relevance(article):
+                from .chat_news import keyword_match
+                names = [alias for alias in self.companies[target_symbol]['aliases'] if alias != target_symbol]
+                named = any(keyword_match(article, alias) for alias in names)
+                code = re.escape(target_symbol)
+                explicit_code = bool(re.search(r'(?:股票代號|代號|ticker)\s*[:：]?\s*' + code +
+                    r'(?!\d)|[（(]\s*' + code + r'\s*[）)]|' + code + r'\.TW\b', article, re.I))
+                return (named or explicit_code) and target_symbol in self.resolve_companies(normalize(article))
+            relevance = company_relevance if target_symbol else None
+            result = self.news_service.query(terms, subject, refresh=any(word in text for word in ('抓', '更新', '最新')), relevance=relevance)
+            return {**result, 'facts': []}
+        except (ValueError, OSError, RuntimeError) as exc:
+            return {'answer': '新聞查詢失敗：' + str(exc), 'facts': [], 'news': []}
+
 
 def main():
     parser = argparse.ArgumentParser(description='NLP 財務比率對話聊天機器人雛形')
@@ -219,6 +285,14 @@ def main():
     parser.add_argument('--refresh', action='store_true', help='重新取得證交所資料；失敗時不偷偷回退快取')
     parser.add_argument('--nlp', choices=('simple', 'snownlp'), default='snownlp')
     parser.add_argument('--question', help='單次問題；省略則互動對話')
+    parser.add_argument('--news-data', help='已清理的新聞 CSV／原始 JSONL')
+    parser.add_argument('--news-sources', help='RSS 來源 JSON；允許對話中抓取最新新聞')
+    parser.add_argument('--news-raw', default='data/news_raw.jsonl')
+    parser.add_argument('--news-limit', type=int, default=5)
+    parser.add_argument('--news-days', type=int, default=7)
+    sentiment = parser.add_mutually_exclusive_group()
+    sentiment.add_argument('--news-nlp-backend', choices=('auto', 'snownlp', 'vader'))
+    sentiment.add_argument('--news-deep-model')
     args = parser.parse_args()
     try:
         if args.twse:
@@ -229,11 +303,22 @@ def main():
                 cache.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
         else:
             records = read_data(args.data)
-        bot = FinancialChat(records, args.nlp)
+        service = None
+        if args.news_data or args.news_sources:
+            from .chat_news import ChatNews
+            predictor = None
+            if args.news_nlp_backend:
+                from .nlp_sentiment import NLPSentiment
+                predictor = NLPSentiment(args.news_nlp_backend)
+            elif args.news_deep_model:
+                from .deep_sentiment import DeepSentiment
+                predictor = DeepSentiment(args.news_deep_model)
+            service = ChatNews(args.news_data, args.news_sources, args.news_raw, predictor, args.news_limit, args.news_days)
+        bot = FinancialChat(records, args.nlp, service)
         if args.question:
             print(bot.reply(args.question)['answer'])
         else:
-            print('財務比率聊天雛形；輸入公司與比率。exit 離開，重設 清除公司脈絡。')
+            print('財務／新聞聊天雛形；輸入公司比率、公司或產業新聞。exit 離開，重設 清除對話脈絡。')
             while True:
                 try:
                     question = input('你：')

@@ -614,3 +614,61 @@ DEMO1,範例半導體,示範半導體|Demo Semiconductor,roe,16,%,2026-Q2,2026-0
 這是財務資料檢索原型，尚無網頁介面、語音、生成式 LLM、多使用者帳號、投資建議生成或下單功能。支援資料中最新期間的查詢；不解析指定歷史／相對期間，不能把最新數字當成「去年」資料。跨公司比較會列出每筆期間與口徑，不自動斷言不同期間的公司誰較便宜。它目前只提供已有資料中的股票／指標，不包含所有 ETF、衍生工具或上櫃股票。
 
 預訓練 NLP 僅輔助文字處理，所有數值均來自來源記錄；公司別名不完整、複雜句型或語意不明時會請使用者指定公司／指標。回覆可作為查詢入口，交易研究仍需結合價格、風險、新聞及獨立回測，不能只依單一比率決定買賣。
+
+
+## 聊天機器人：公司／產業新聞與情緒
+
+財務聊天原型現可接入 ChatNews，重用多來源 RSS、前處理及既有情緒模型。預設使用本機資料；在問題中加入「抓取」「更新」或「最新」才重新抓 RSS。只有提供 news-sources 才啟用抓取，來源設定沿用官方 RSS 與其使用規範。
+
+macOS（先安裝 requirements-nlp.txt）：
+
+```sh
+.venv/bin/python -m quantpilot.financial_chat --twse --news-data data/news_clean.csv --news-sources examples/rss_sources.json --news-nlp-backend auto
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m quantpilot.financial_chat --twse --news-data data/news_clean.csv --news-sources examples/rss_sources.json --news-nlp-backend auto
+```
+
+對話範例：
+
+```text
+你：台積電新聞
+你：那情緒如何？
+你：抓取最新台積電新聞並分析情緒
+你：半導體產業新聞
+你：那情緒如何？
+你：金融產業新聞
+你：重設
+```
+
+也可先查公司比率再追問「那新聞情緒呢？」。一次查一家公司的新聞或一個產業，避免把多家公司情緒混成同一家公司結果；財務與新聞問題請分開提出。未知公司不會套用舊公司脈絡。
+
+### 新聞及情緒設定
+
+- `--news-data`：現有新聞 CSV／JSONL；明確指定的檔案不存在時報錯，不會無提示當成沒有新聞。
+- `--news-sources`：含 name、url 的 RSS JSON。新抓資料追加至 `--news-raw`（預設 data/news_raw.jsonl），保留首次取得時間，重新清理／去重。
+- `--news-limit 5`：最多展示並分析的最新匹配新聞數（1 至 20）。統計只包含展示樣本，不是全部來源或產業的情緒。
+- `--news-days 7`：最近幾日的窗口。優先依發布時間篩選；缺少發布時間則以取得時間，並顯示缺失。未來發布／取得的資料不會顯示。對話不解析「最近 30 天」等自訂時間句型，請用此參數設定窗口。
+- `--news-nlp-backend auto`：使用 SnowNLP／VADER。省略情緒模型選項則使用既有詞典；不安裝 NLP 套件時需另指定 `--nlp simple`。
+- `--news-deep-model lxyuan/distilbert-base-multilingual-cased-sentiments-student`：改用既有 Transformer，需另裝 requirements-deep.txt；與 news-nlp-backend 擇一。
+
+### 關聯與回覆
+
+公司查詢使用財務資料中的名稱、代號及 aliases，並以最長公司名稱解決短名稱重疊，降低把另一家公司當成查詢公司的情況。新聞內容中的純數字需具有明確代號、括號或 .TW 語境才視為股票代號，避免把股價數字當成公司代號。別名不完整或文章未提及名稱／代號時可能漏掉新聞；僅提及公司也不代表事件直接影響該公司。
+
+產業為可編輯的關鍵字表，預設半導體、金融、人工智慧、航運、電動車。中英關鍵字支援邊界檢查（例如 AI 不會命中 chair），但不是正式產業分類或語意檢索；相關性需人工檢查。
+
+回覆逐則顯示標題、來源連結、發布／取得時間、情緒標籤、分數與需檢查狀態，另提供正面／中性／負面數量及平均分數。機器人不生成未來源支持的新聞摘要；分析的是 RSS 標題／摘要，不抓全文。SnowNLP 為商品評論領域的預訓練模型，實際財經新聞可能出現明顯誤判，即使分數接近 ±1 也不是準確率。
+
+更新報告寫入 raw 同資料夾的 chat_collection_report.json。部分來源失敗會在回答中說明，成功資料與累積快取仍可查詢；整批沒有取得資料時回覆失敗，不把快取當成本次成功更新。無匹配只代表來源快照、窗口與關鍵字下沒有結果，不代表市場沒有新聞。
+
+免網路示範：
+
+```sh
+python3 -m quantpilot.financial_chat --data examples/financial_demo.csv --news-data examples/chat_news_demo.jsonl --nlp simple --news-days 365 --question "範例半導體新聞"
+```
+
+Windows 把 python3 改為 py -3。此範例為合成資料，窗口相對執行時間；資料日期在 2026-10-06，日期過久時需調整示範資料或窗口。真實驗證曾成功查詢台積電快取新聞，以及更新中央社／Yahoo 來源後查詢半導體新聞；這是流程驗證，不是對模型準確率或市場情緒的驗證。
