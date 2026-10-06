@@ -15,6 +15,79 @@ text,label
 公司公布股東會日期,neutral
 ```
 
+## 安裝 Python（Windows／macOS）
+
+下方所有進入目錄的指令都使用示意路徑，請替換為 repo 存放在電腦上的實際完整路徑（包含 quantpilot 資料夾），不要直接照貼示意路徑。
+
+新環境可先選 Python 3.13 的一般版本（非 free-threaded 版本），再依功能安裝專案套件。以下以 3.13 示範；若使用其他版本，請替換指令中的版本號並確認套件支援。已安裝 Python 的使用者可先執行版本確認，無須重複安裝。
+
+### Windows：官方 Python install manager
+
+1. 開啟 [Python 官方 Windows 下載頁](https://www.python.org/downloads/windows/)，下載並安裝 Python install manager（也可透過 Microsoft Store 安裝）。
+2. 安裝完成後重新開啟 PowerShell，執行以下指令安裝 Python 執行環境並確認版本。`pymanager` 用來避免與舊版 `py` launcher 的管理命令混淆。
+
+```powershell
+pymanager install 3.13
+py -3.13 --version
+py -3.13 -m pip --version
+```
+
+3. 進入專案，建立虛擬環境並更新 pip：
+
+```powershell
+Set-Location "C:\repo\存放在電腦上的實際路徑\quantpilot"
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe --version
+```
+
+若使用舊版 `.exe` 安裝程式，請選符合電腦架構的 installer，並勾選 **Add python.exe to PATH**；安裝後重新開啟 PowerShell，再確認 `py -3.13` 或 `python` 是否可用。新的 install manager 安裝介面與舊版 installer 不同。
+
+若指令無法辨識，先重新開啟終端機；再依 [Python 官方 Windows 安裝與疑難排解](https://docs.python.org/3/using/windows.html) 檢查 App execution aliases 與 PATH。舊 launcher 占用 `py` 時可用 `pymanager exec -3.13 --version` 確認 install manager 的執行環境。
+
+### macOS：官方安裝程式
+
+1. 開啟 [Python 官方 macOS 下載頁](https://www.python.org/downloads/macos/)，選 Python 3.13 的 macOS installer（`.pkg`）。universal2 安裝程式支援 Apple Silicon 與 Intel，仍需確認該版要求的 macOS 版本。
+2. 開啟 `.pkg` 並依安裝精靈完成安裝。
+3. 在 Finder 的 `/Applications/Python 3.13/` 執行 **Install Certificates.command**，完成官方安裝程式的 HTTPS 憑證設定；RSS 收集與模型下載會使用 HTTPS。步驟見 [Python 官方 macOS 說明](https://docs.python.org/3/using/mac.html)。
+4. 重新開啟 Terminal，確認版本並建立專案虛擬環境：
+
+```sh
+python3.13 --version
+python3.13 -m pip --version
+cd "/repo/存放在電腦上的實際路徑/quantpilot"
+python3.13 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python --version
+```
+
+若 `python3.13` 無法辨識，確認安裝成功，並查看安裝目錄中的 Update Shell Profile.command，再重新開啟 Terminal。使用明確版本的指令可避免誤用電腦上既有的其他 Python。
+
+### 安裝專案套件
+
+虛擬環境建立後，依功能選擇套件清單。基準情緒分析及 RSS 收集不用額外套件：
+
+| 功能 | 套件清單 |
+| --- | --- |
+| SnowNLP／VADER 情緒分析 | requirements-nlp.txt |
+| TF-IDF／Ridge 交易特徵 | requirements-strategy.txt |
+| backtesting.py 回測 | requirements-backtest.txt |
+| Transformer 深度學習情緒 | requirements-deep.txt |
+
+例如安裝回測套件：
+
+```sh
+# macOS
+.venv/bin/python -m pip install -r requirements-backtest.txt
+```
+
+```powershell
+# Windows
+.\.venv\Scripts\python.exe -m pip install -r requirements-backtest.txt
+```
+
+後面的 `python3`／`py -3` 基準指令，可改用上述虛擬環境 Python 路徑，確保使用同一個環境。直接執行虛擬環境 Python 不需要啟用腳本，也不需要修改 PowerShell 執行政策。若 `.venv` 已存在，先確認其中的 Python 版本；建立環境時不會自動把舊環境升級為新的 Python 版本。
+
 ## 執行前準備
 
 安裝 Python 3，確認終端機可以執行 Python。基準分析與比較工具只使用標準函式庫，不需要第三方套件；啟用深度學習時請依下方說明安裝。
@@ -35,7 +108,7 @@ text
 開啟 Terminal，進入專案並確認 Python 版本：
 
 ```sh
-cd "/Users/shonwang/Documents/Self/Code/quantpilot"
+cd "/repo/存放在電腦上的實際路徑/quantpilot"
 python3 --version
 ```
 
@@ -63,7 +136,7 @@ cat sentiment.jsonl
 開啟 PowerShell，將下方路徑替換成 Windows 上的實際專案路徑：
 
 ```powershell
-Set-Location "C:\Users\你的使用者名稱\Documents\Self\Code\quantpilot"
+Set-Location "C:\repo\存放在電腦上的實際路徑\quantpilot"
 py -3 --version
 ```
 
@@ -108,7 +181,7 @@ Get-Content -Encoding UTF8 sentiment.jsonl
 
 使用預訓練 Transformer，依上下文產生三類情緒機率。預設為 [多語言 DistilBERT](https://huggingface.co/lxyuan/distilbert-base-multilingual-cased-sentiments-student)，中文新聞可先使用此模型作為深度學習基準；它不是針對台灣財經新聞微調的模型，繁體中文效果需要實際驗證。英文財經新聞可指定 [FinBERT](https://huggingface.co/ProsusAI/finbert)。推論介面依據 [Transformers 官方文件](https://huggingface.co/docs/transformers/main_classes/pipelines)。
 
-建議使用 Python 3.11 或 3.12 建立獨立環境。以下指令均在專案根目錄執行。
+建議依上方 Python 安裝章節建立獨立環境，並確認 PyTorch／Transformers 支援所選的 Python 版本。以下指令均在專案根目錄執行。
 
 ### macOS
 
@@ -416,7 +489,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m quantpilot.backtest --prices examples/ohlc_demo.csv --signals examples/signals_demo.csv --hold-bars 1 --output-dir data/backtest_demo
 ```
 
-examples/ohlc_demo.csv 與 signals_demo.csv 完全為合成資料，用來驗證框架；不是台股歷史行情或獲利證據。建議使用 Python 3.11／3.12，並執行 `.venv/bin/python -m unittest discover -s tests`（Windows 替換 Python 路徑）驗證安裝環境。
+examples/ohlc_demo.csv 與 signals_demo.csv 完全為合成資料，用來驗證框架；不是台股歷史行情或獲利證據。建議依上方 Python 安裝章節建立獨立環境，並執行 `.venv/bin/python -m unittest discover -s tests`（Windows 替換 Python 路徑）驗證安裝環境。
 
 ### 價格與訊號介面
 
